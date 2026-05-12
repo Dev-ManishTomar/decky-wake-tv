@@ -7,6 +7,8 @@ import decky
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 from tv_client import TVClient, send_wol, discover_mac, is_reachable  # noqa: E402
+from input_watcher import watch_guide_button  # noqa: E402
+from sleep_watcher import watch_sleep_resume  # noqa: E402
 
 
 SETTINGS_FILE = "settings.json"
@@ -16,12 +18,16 @@ DEFAULT_SETTINGS = {
     "mac_address": "",
     "client_key": "",
     "paired": False,
+    "wake_on_guide_button": True,
+    "wake_on_resume": True,
 }
 
 
 class Plugin:
     _settings: dict = {}
     _settings_path: str = ""
+    _guide_task: asyncio.Task | None = None
+    _sleep_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -33,9 +39,23 @@ class Plugin:
             SETTINGS_FILE,
         )
         self._load_settings()
-        decky.logger.info("Wake TV plugin loaded")
+        decky.logger.info(
+            f"Wake TV plugin loading | ip={self._settings.get('tv_ip', '')} "
+            f"mac={self._settings.get('mac_address', '')} "
+            f"hdmi={self._settings.get('hdmi_input', '')} "
+            f"paired={self._settings.get('paired', False)} "
+            f"guide={self._settings.get('wake_on_guide_button', True)} "
+            f"resume={self._settings.get('wake_on_resume', True)}"
+        )
+        self._start_watchers()
+
+        if self._settings.get("wake_on_resume", True) and self._settings.get("mac_address"):
+            asyncio.get_event_loop().create_task(self._startup_wake())
+
+        decky.logger.info("Wake TV plugin loaded, all background tasks started")
 
     async def _unload(self) -> None:
+        self._stop_watchers()
         decky.logger.info("Wake TV plugin unloaded")
 
     async def _uninstall(self) -> None:
@@ -43,6 +63,112 @@ class Plugin:
 
     async def _migration(self) -> None:
         pass
+
+    # ------------------------------------------------------------------
+    # Background watchers
+    # ------------------------------------------------------------------
+
+    def _start_watchers(self) -> None:
+        loop = asyncio.get_event_loop()
+        if self._settings.get("wake_on_guide_button", True):
+            self._guide_task = loop.create_task(self._watch_guide_button())
+            decky.logger.info("Guide button watcher started")
+        if self._settings.get("wake_on_resume", True):
+            self._sleep_task = loop.create_task(self._watch_sleep_resume())
+            decky.logger.info("Sleep resume watcher started")
+
+    def _stop_watchers(self) -> None:
+        if self._guide_task and not self._guide_task.done():
+            self._guide_task.cancel()
+            self._guide_task = None
+        if self._sleep_task and not self._sleep_task.done():
+            self._sleep_task.cancel()
+            self._sleep_task = None
+
+    def _restart_watchers(self) -> None:
+        self._stop_watchers()
+        self._start_watchers()
+
+    async def _watch_guide_button(self) -> None:
+        try:
+            await watch_guide_button(self._do_wake)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            decky.logger.error(f"Guide button watcher crashed: {exc}")
+
+    async def _watch_sleep_resume(self) -> None:
+        try:
+            await watch_sleep_resume(on_resume=self._do_wake)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            decky.logger.error(f"Sleep watcher crashed: {exc}")
+
+    async def _startup_wake(self) -> None:
+        """
+        Fire a wake on plugin startup. Covers the case where the Deck just
+        resumed from sleep but the D-Bus signal was missed because the plugin
+        was restarting. Small delay to let the network come up.
+        """
+        decky.logger.info("Startup wake: waiting 5s for network to stabilize...")
+        await asyncio.sleep(5)
+
+        ip = self._settings.get("tv_ip", "")
+        if ip:
+            reachable = await is_reachable(ip, timeout=3.0)
+            decky.logger.info(f"Startup wake: TV reachable check = {reachable}")
+            if not reachable:
+                decky.logger.info("Startup wake: TV appears off, firing auto-wake")
+                await self._do_wake()
+            else:
+                decky.logger.info("Startup wake: TV already on, skipping")
+        else:
+            decky.logger.info("Startup wake: no TV IP configured, skipping")
+
+    async def _do_wake(self) -> None:
+        """Shared wake logic: send WOL then try to connect and switch HDMI."""
+        mac = self._settings.get("mac_address", "")
+        ip = self._settings.get("tv_ip", "")
+        hdmi = self._settings.get("hdmi_input", "HDMI_1")
+        key = self._settings.get("client_key", "")
+
+        decky.logger.info(
+            f"Auto-wake triggered | mac={mac} ip={ip} hdmi={hdmi} has_key={bool(key)}"
+        )
+
+        if not mac:
+            decky.logger.warning("Auto-wake skipped: no MAC address configured")
+            return
+
+        try:
+            send_wol(mac)
+            decky.logger.info(f"Auto-wake: WOL magic packet sent to {mac}")
+        except Exception as exc:
+            decky.logger.error(f"Auto-wake: WOL send failed: {exc}")
+            return
+
+        if not (ip and key):
+            decky.logger.info("Auto-wake: no IP/key, skipping HDMI switch")
+            return
+
+        for attempt in range(5):
+            decky.logger.info(f"Auto-wake: HDMI switch attempt {attempt + 1}/5, waiting 3s...")
+            await asyncio.sleep(3)
+            try:
+                client = TVClient(ip)
+                await client.connect()
+                decky.logger.info(f"Auto-wake: connected to TV at {ip}")
+                await client.register(client_key=key)
+                decky.logger.info("Auto-wake: registered with TV")
+                await client.switch_input(hdmi)
+                await client.close()
+                decky.logger.info(f"Auto-wake: HDMI switched to {hdmi} (attempt {attempt + 1})")
+                return
+            except Exception as exc:
+                decky.logger.info(f"Auto-wake: attempt {attempt + 1} failed: {exc}")
+                continue
+        decky.logger.warning("Auto-wake: HDMI switch failed after 5 attempts")
 
     # ------------------------------------------------------------------
     # Settings persistence
@@ -76,14 +202,29 @@ class Plugin:
             "hdmi_input": self._settings.get("hdmi_input", "HDMI_1"),
             "mac_address": self._settings.get("mac_address", ""),
             "paired": self._settings.get("paired", False),
+            "wake_on_guide_button": self._settings.get("wake_on_guide_button", True),
+            "wake_on_resume": self._settings.get("wake_on_resume", True),
         }
 
-    async def save_settings(self, tv_ip: str, hdmi_input: str, mac_address: str) -> dict:
+    async def save_settings(
+        self,
+        tv_ip: str,
+        hdmi_input: str,
+        mac_address: str,
+        wake_on_guide_button: bool = True,
+        wake_on_resume: bool = True,
+    ) -> dict:
         self._settings["tv_ip"] = tv_ip.strip()
         self._settings["hdmi_input"] = hdmi_input.strip()
         self._settings["mac_address"] = mac_address.strip()
+        self._settings["wake_on_guide_button"] = wake_on_guide_button
+        self._settings["wake_on_resume"] = wake_on_resume
         self._save_settings_to_disk()
-        decky.logger.info(f"Settings saved: ip={tv_ip} hdmi={hdmi_input}")
+        self._restart_watchers()
+        decky.logger.info(
+            f"Settings saved: ip={tv_ip} hdmi={hdmi_input} "
+            f"guide={wake_on_guide_button} resume={wake_on_resume}"
+        )
         return {"ok": True}
 
     async def pair_tv(self) -> dict:

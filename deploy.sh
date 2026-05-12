@@ -88,6 +88,9 @@ deploy() {
     scp $SCP_OPTS \
         "$SCRIPT_DIR/py_modules/__init__.py" \
         "$SCRIPT_DIR/py_modules/tv_client.py" \
+        "$SCRIPT_DIR/py_modules/input_watcher.py" \
+        "$SCRIPT_DIR/py_modules/sleep_watcher.py" \
+        "$SCRIPT_DIR/py_modules/usb_wake.py" \
         "${REMOTE}:${STAGING}/py_modules/"
 
     # Swap into plugin directory and restart Decky to reload the backend

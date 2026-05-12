@@ -5,6 +5,7 @@ import {
   PanelSectionRow,
   Field,
   TextField,
+  ToggleField,
   Spinner,
 } from "@decky/ui";
 import { call } from "@decky/api";
@@ -23,6 +24,8 @@ interface Settings {
   hdmi_input: string;
   mac_address: string;
   paired: boolean;
+  wake_on_guide_button: boolean;
+  wake_on_resume: boolean;
 }
 
 interface OkResult {
@@ -74,6 +77,8 @@ export const WakeTVPanel: FC = () => {
   const [macAddress, setMacAddress] = useState("");
   const [paired, setPaired] = useState(false);
   const [reachable, setReachable] = useState(false);
+  const [wakeOnGuide, setWakeOnGuide] = useState(true);
+  const [wakeOnResume, setWakeOnResume] = useState(true);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -87,6 +92,8 @@ export const WakeTVPanel: FC = () => {
         setHdmiInput(s.hdmi_input);
         setMacAddress(s.mac_address);
         setPaired(s.paired);
+        setWakeOnGuide(s.wake_on_guide_button);
+        setWakeOnResume(s.wake_on_resume);
       })
       .catch(() => {});
   }, []);
@@ -118,7 +125,9 @@ export const WakeTVPanel: FC = () => {
   const handleSave = useCallback(async () => {
     setBusy("save");
     try {
-      await call<[string, string, string], OkResult>("save_settings", tvIp, hdmiInput, macAddress);
+      await call<[string, string, string, boolean, boolean], OkResult>(
+        "save_settings", tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume
+      );
       pollVersion.current += 1;
       showFeedback("Settings saved");
     } catch {
@@ -126,7 +135,7 @@ export const WakeTVPanel: FC = () => {
     } finally {
       setBusy(null);
     }
-  }, [tvIp, hdmiInput, macAddress, showFeedback]);
+  }, [tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume, showFeedback]);
 
   const handlePair = useCallback(async () => {
     setBusy("pair");
@@ -222,6 +231,20 @@ export const WakeTVPanel: FC = () => {
             onChange={(e) => setMacAddress(e.target.value)}
           />
         </PanelSectionRow>
+
+        <ToggleField
+          label="Wake on Guide Button"
+          description="Press gamepad Guide/Home to wake TV"
+          checked={wakeOnGuide}
+          onChange={(val) => setWakeOnGuide(val)}
+        />
+
+        <ToggleField
+          label="Wake on Resume"
+          description="Wake TV when Deck resumes from sleep"
+          checked={wakeOnResume}
+          onChange={(val) => setWakeOnResume(val)}
+        />
 
         <PanelSectionRow>
           <ButtonItem onClick={handleSave} disabled={busy !== null} layout="below">
