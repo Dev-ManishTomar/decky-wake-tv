@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 from tv_client import TVClient, send_wol, discover_mac, is_reachable  # noqa: E402
 from input_watcher import watch_guide_button  # noqa: E402
 from sleep_watcher import watch_sleep_resume  # noqa: E402
-from usb_rebind import rebind_external_gamepads  # noqa: E402
+from usb_rebind import rebind_external_gamepads, enable_usb_wakeup  # noqa: E402
 
 
 SETTINGS_FILE = "settings.json"
@@ -110,13 +110,18 @@ class Plugin:
         """Called when system resumes: rebind gamepads and wait for network in parallel, then wake TV."""
         import socket
 
-        async def _rebind():
+        async def _rebind_and_enable_wake():
+            loop = asyncio.get_event_loop()
             try:
-                loop = asyncio.get_event_loop()
                 count = await loop.run_in_executor(None, rebind_external_gamepads)
                 decky.logger.info(f"Post-resume: rebound {count} gamepad(s)")
             except Exception as exc:
                 decky.logger.warning(f"Post-resume: gamepad rebind failed: {exc}")
+            try:
+                n = await loop.run_in_executor(None, enable_usb_wakeup)
+                decky.logger.info(f"Post-resume: re-enabled USB wakeup on {n} node(s)")
+            except Exception as exc:
+                decky.logger.warning(f"Post-resume: USB wakeup enable failed: {exc}")
 
         async def _wait_for_network():
             for i in range(15):
@@ -134,7 +139,7 @@ class Plugin:
             decky.logger.warning("Post-resume: network not ready after 15s, trying wake anyway")
 
         decky.logger.info("Post-resume: rebinding gamepads + waiting for network...")
-        await asyncio.gather(_rebind(), _wait_for_network())
+        await asyncio.gather(_rebind_and_enable_wake(), _wait_for_network())
         await self._do_wake()
 
     async def _startup_wake(self) -> None:

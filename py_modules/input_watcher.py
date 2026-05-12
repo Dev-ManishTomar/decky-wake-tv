@@ -20,6 +20,7 @@ EV_KEY = 0x01
 BTN_MODE = 316
 RESCAN_INTERVAL = 30
 COOLDOWN_SECONDS = 5
+MIN_RESCAN_INTERVAL = 3
 
 # struct input_event: struct timeval (long, long), __u16 type, __u16 code, __s32 value
 # On 64-bit Linux: timeval is two 8-byte longs
@@ -117,7 +118,9 @@ async def watch_guide_button(callback, button_code: int = BTN_MODE) -> None:
                     lambda: select.select(list(fd_to_path.keys()), [], [], 2.0),
                 )
             except Exception:
-                await asyncio.sleep(1)
+                elapsed = time.monotonic() - last_scan
+                if elapsed < MIN_RESCAN_INTERVAL:
+                    await asyncio.sleep(MIN_RESCAN_INTERVAL - elapsed)
                 scan_and_open()
                 last_scan = time.monotonic()
                 continue
@@ -146,6 +149,9 @@ async def watch_guide_button(callback, button_code: int = BTN_MODE) -> None:
                 except OSError:
                     path = fd_to_path.get(fd, "?")
                     logger.info(f"Device lost: {path}, will rescan")
+                    elapsed = time.monotonic() - last_scan
+                    if elapsed < MIN_RESCAN_INTERVAL:
+                        await asyncio.sleep(MIN_RESCAN_INTERVAL - elapsed)
                     scan_and_open()
                     last_scan = time.monotonic()
                     break

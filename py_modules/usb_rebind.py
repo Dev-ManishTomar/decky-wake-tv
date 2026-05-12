@@ -26,6 +26,9 @@ GAMEPAD_RECEIVER_IDS = {
 }
 
 BUILTIN_USB_BUSES = {"1-2", "1-3"}
+SETTLE_DELAY = 1.5
+MAX_RETRIES = 3
+RETRY_DELAY = 1.0
 
 
 def _read_sysfs(path: str) -> str:
@@ -89,15 +92,102 @@ def rebind_usb_device(port: str) -> bool:
         return False
 
 
+USB_HUB_IDS = {
+    "05e3:0610",  # USB2.1 Hub (dock)
+    "05e3:0626",  # USB3.1 Hub (dock)
+}
+
+
+def enable_usb_wakeup() -> int:
+    """Enable wakeup on dock USB hubs and their root host controllers.
+
+    Returns the number of sysfs nodes successfully enabled.
+    """
+    enabled = 0
+    root_hubs: set[str] = set()
+
+    for dev_dir in glob.glob("/sys/bus/usb/devices/[0-9]*"):
+        vid = _read_sysfs(os.path.join(dev_dir, "idVendor"))
+        pid = _read_sysfs(os.path.join(dev_dir, "idProduct"))
+        if not vid or not pid:
+            continue
+        if f"{vid}:{pid}" not in USB_HUB_IDS:
+            continue
+
+        port = os.path.basename(dev_dir)
+        wake_path = os.path.join(dev_dir, "power", "wakeup")
+        current = _read_sysfs(wake_path)
+        if current == "enabled":
+            logger.info(f"USB wakeup already enabled on {port}")
+            enabled += 1
+        else:
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", "tee", wake_path],
+                    input=b"enabled", timeout=5, capture_output=True,
+                )
+                if result.returncode == 0:
+                    logger.info(f"USB wakeup enabled on {port}")
+                    enabled += 1
+                else:
+                    err = result.stderr.decode(errors="replace").strip()
+                    logger.warning(f"Failed to enable wakeup on {port}: {err}")
+            except Exception as exc:
+                logger.warning(f"Exception enabling wakeup on {port}: {exc}")
+
+        bus = port.split("-")[0] if "-" in port else ""
+        if bus:
+            root_hubs.add(f"usb{bus}")
+
+    for root in sorted(root_hubs):
+        wake_path = f"/sys/bus/usb/devices/{root}/power/wakeup"
+        current = _read_sysfs(wake_path)
+        if current == "enabled":
+            enabled += 1
+            continue
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "tee", wake_path],
+                input=b"enabled", timeout=5, capture_output=True,
+            )
+            if result.returncode == 0:
+                logger.info(f"USB wakeup enabled on {root}")
+                enabled += 1
+            else:
+                err = result.stderr.decode(errors="replace").strip()
+                logger.warning(f"Failed to enable wakeup on {root}: {err}")
+        except Exception as exc:
+            logger.warning(f"Exception enabling wakeup on {root}: {exc}")
+
+    return enabled
+
+
 def rebind_external_gamepads() -> int:
-    """Find and rebind all external gamepad USB devices. Returns count."""
-    ports = find_external_gamepad_ports()
-    if not ports:
+    """Find and rebind all external gamepad USB devices. Returns count.
+
+    Waits briefly for USB devices to settle after resume, and retries
+    the scan if fewer devices than expected are found (some dongles
+    enumerate slower than others).
+    """
+    time.sleep(SETTLE_DELAY)
+    all_ports: set[str] = set()
+    for attempt in range(MAX_RETRIES):
+        ports = find_external_gamepad_ports()
+        all_ports.update(ports)
+        if len(all_ports) >= 2 or attempt == MAX_RETRIES - 1:
+            break
+        logger.info(
+            f"Found {len(all_ports)} gamepad(s), retrying scan "
+            f"({attempt + 1}/{MAX_RETRIES})..."
+        )
+        time.sleep(RETRY_DELAY)
+
+    if not all_ports:
         logger.info("No external gamepad USB devices found to rebind")
         return 0
     success = 0
-    for port in ports:
+    for port in sorted(all_ports):
         if rebind_usb_device(port):
             success += 1
-    logger.info(f"Rebound {success}/{len(ports)} external gamepad(s)")
+    logger.info(f"Rebound {success}/{len(all_ports)} external gamepad(s)")
     return success
