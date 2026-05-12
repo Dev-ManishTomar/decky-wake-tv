@@ -76,9 +76,11 @@ def rebind_usb_device(port: str) -> bool:
         )
         if result.returncode != 0:
             err = result.stderr.decode(errors="replace").strip()
-            if "No such device" not in err and "busy" not in err.lower():
+            if "No such device" in err or "busy" in err.lower():
+                logger.info(f"Bind {port} skipped (already bound or gone): {err}")
+            else:
                 logger.warning(f"Bind {port} failed: {err}")
-                return False
+            return False
 
         logger.info(f"Rebound USB port {port}")
         return True
