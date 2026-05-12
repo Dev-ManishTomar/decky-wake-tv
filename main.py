@@ -302,22 +302,25 @@ class Plugin:
         ip = self._settings.get("tv_ip", "")
         hdmi = self._settings.get("hdmi_input", "HDMI_1")
         key = self._settings.get("client_key", "")
-        if ip and key:
-            for attempt in range(5):
-                await asyncio.sleep(3)
-                client = TVClient(ip)
-                try:
-                    await client.connect()
-                    await client.register(client_key=key)
-                    await client.switch_input(hdmi)
-                    decky.logger.info(f"HDMI switched to {hdmi} (attempt {attempt + 1})")
-                    return {"ok": True}
-                except Exception:
-                    continue
-                finally:
-                    await client.close()
+        if not (ip and key):
+            return {"ok": True, "note": "WOL sent but no IP/key configured for HDMI switch"}
 
-        return {"ok": True, "note": "WOL sent, HDMI switch may not have succeeded"}
+        for attempt in range(5):
+            await asyncio.sleep(3)
+            client = TVClient(ip)
+            try:
+                await client.connect()
+                await client.register(client_key=key)
+                await client.switch_input(hdmi)
+                decky.logger.info(f"HDMI switched to {hdmi} (attempt {attempt + 1})")
+                return {"ok": True}
+            except Exception:
+                continue
+            finally:
+                await client.close()
+
+        decky.logger.warning("HDMI switch failed after 5 attempts")
+        return {"ok": False, "error": "WOL sent but HDMI switch failed after 5 attempts"}
 
     async def turn_off_tv(self) -> dict:
         ip = self._settings.get("tv_ip", "")
