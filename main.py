@@ -121,15 +121,16 @@ class Plugin:
         async def _wait_for_network():
             for i in range(15):
                 await asyncio.sleep(1)
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     s.settimeout(0.5)
                     s.connect(("8.8.8.8", 80))
-                    s.close()
                     decky.logger.info(f"Post-resume: network up after {i+1}s")
                     return
                 except OSError:
                     pass
+                finally:
+                    s.close()
             decky.logger.warning("Post-resume: network not ready after 15s, trying wake anyway")
 
         decky.logger.info("Post-resume: rebinding gamepads + waiting for network...")
