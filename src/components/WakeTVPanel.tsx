@@ -9,7 +9,7 @@ import {
   Spinner,
 } from "@decky/ui";
 import { call } from "@decky/api";
-import { FC, CSSProperties, useEffect, useState, useCallback, useRef } from "react";
+import { FC, CSSProperties, useEffect, useState, useCallback } from "react";
 import {
   FaPowerOff, FaPlug, FaSave,
   FaCircle, FaChevronRight,
@@ -83,7 +83,7 @@ export const WakeTVPanel: FC = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  const pollVersion = useRef(0);
+  const [pollVersion, setPollVersion] = useState(0);
 
   useEffect(() => {
     call<[], Settings>("get_settings")
@@ -108,7 +108,7 @@ export const WakeTVPanel: FC = () => {
     check();
     const id = setInterval(check, 15_000);
     return () => { active = false; clearInterval(id); };
-  }, [pollVersion.current]);
+  }, [pollVersion]);
 
   const showFeedback = useCallback((msg: string) => {
     setFeedback(msg);
@@ -128,7 +128,7 @@ export const WakeTVPanel: FC = () => {
       await call<[string, string, string, boolean, boolean], OkResult>(
         "save_settings", tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume
       );
-      pollVersion.current += 1;
+      setPollVersion((v) => v + 1);
       showFeedback("Settings saved");
     } catch {
       showFeedback("Failed to save");
