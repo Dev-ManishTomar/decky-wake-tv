@@ -10,7 +10,7 @@ Works with any TV that supports Wake-on-LAN (WOL) and the LG webOS SSAP protocol
 - **Auto HDMI switch** - Automatically switch to the correct HDMI input after waking
 - **Gamepad Guide button wake** - Press the Guide/Home button on your gamepad to wake the TV
 - **Sleep/resume wake** - Automatically wake the TV when your device resumes from sleep
-- **External gamepad fix** - Automatically rebinds external USB gamepads after resume (fixes the common issue where wireless gamepads stop working after sleep)
+- **External gamepad fix** - Automatically rebinds external USB gamepads after resume when InputPlumber is not present (defers to InputPlumber's suspend service when available to avoid duplicate notifications)
 - **USB wakeup chain repair** - Re-enables USB hub wakeup flags after each resume so the gamepad can always wake the device from the next sleep
 - **Pair & forget** - One-time pairing with your LG TV, credentials persist across reboots
 
@@ -88,7 +88,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now usb-wake.service"
 
 ### 3. InputPlumber Suspend Service
 
-Enables proper input device cleanup/restoration on sleep/resume.
+Enables proper input device cleanup/restoration on sleep/resume. When this service is enabled, the plugin automatically skips its own USB rebind (InputPlumber handles it), which avoids duplicate controller notifications on wake.
 
 ```bash
 ssh -t deck@<DEVICE_IP> "sudo systemctl enable inputplumber-suspend.service"
@@ -100,7 +100,7 @@ ssh -t deck@<DEVICE_IP> "sudo systemctl enable inputplumber-suspend.service"
 
 1. System wakes up (power button, gamepad disconnect, or WOL packet)
 2. Plugin detects the D-Bus `PrepareForSleep(false)` signal
-3. External USB gamepads are rebound (unbind + bind) to fix the xpad driver resume bug
+3. If `inputplumber-suspend.service` is not enabled, external USB gamepads are rebound (unbind + bind) to fix the xpad driver resume bug. Otherwise InputPlumber handles device restoration.
 4. USB hub wakeup flags are re-enabled (some drivers reset them on suspend)
 5. Plugin waits for the network to come up (polls every 1s)
 6. WOL magic packet is sent to the TV
@@ -229,9 +229,9 @@ wake-tv/
 - The `inputplumber-suspend.service` should be enabled
 
 ### External gamepad doesn't work after sleep
-- Verify the sudoers rule is in place: `ls -la /etc/sudoers.d/zz-waketv-usb`
-- Check plugin logs for rebind results (look for "Post-resume: rebound")
-- The plugin retries scanning for gamepads if not all are found immediately
+- If `inputplumber-suspend.service` is enabled, InputPlumber handles device restoration. Check its logs: `journalctl -u inputplumber -n 50`
+- If InputPlumber is not installed, verify the sudoers rule is in place: `ls -la /etc/sudoers.d/zz-waketv-usb`
+- Check plugin logs for rebind results (look for "Post-resume:" and "inputplumber-suspend")
 
 ### Plugin logs
 ```bash
