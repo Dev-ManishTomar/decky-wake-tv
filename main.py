@@ -111,13 +111,14 @@ class Plugin:
         import socket
 
         async def _rebind_and_enable_wake():
-            loop = asyncio.get_event_loop()
             try:
+                loop = asyncio.get_event_loop()
                 count = await loop.run_in_executor(None, rebind_external_gamepads)
                 decky.logger.info(f"Post-resume: rebound {count} gamepad(s)")
             except Exception as exc:
                 decky.logger.warning(f"Post-resume: gamepad rebind failed: {exc}")
             try:
+                loop = asyncio.get_event_loop()
                 n = await loop.run_in_executor(None, enable_usb_wakeup)
                 decky.logger.info(f"Post-resume: re-enabled USB wakeup on {n} node(s)")
             except Exception as exc:
