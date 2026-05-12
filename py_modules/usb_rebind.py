@@ -162,13 +162,33 @@ def enable_usb_wakeup() -> int:
     return enabled
 
 
+def _inputplumber_suspend_active() -> bool:
+    """Check if inputplumber-suspend.service is enabled.
+
+    When active, InputPlumber handles device suspend/resume itself,
+    making our USB rebind redundant (and causing extra popups).
+    Checks the systemd symlink directly to avoid environment issues
+    with systemctl inside the Decky plugin sandbox.
+    """
+    symlink = "/etc/systemd/system/sleep.target.wants/inputplumber-suspend.service"
+    found = os.path.islink(symlink) or os.path.isfile(symlink)
+    logger.info(f"inputplumber-suspend.service: {'enabled' if found else 'not found'}")
+    return found
+
+
 def rebind_external_gamepads() -> int:
     """Find and rebind all external gamepad USB devices. Returns count.
 
-    Waits briefly for USB devices to settle after resume, and retries
-    the scan if fewer devices than expected are found (some dongles
-    enumerate slower than others).
+    Skips rebinding if InputPlumber's suspend service is handling device
+    lifecycle (avoids duplicate disconnect/reconnect popups).
     """
+    if _inputplumber_suspend_active():
+        logger.info(
+            "inputplumber-suspend.service is enabled, "
+            "skipping USB rebind (InputPlumber handles resume)"
+        )
+        return 0
+
     time.sleep(SETTLE_DELAY)
     all_ports: set[str] = set()
     for attempt in range(MAX_RETRIES):
