@@ -1,6 +1,6 @@
 # Wake TV - Decky Loader Plugin
 
-A [Decky Loader](https://decky.xyz) plugin that automatically wakes your TV and switches to the correct HDMI input when your Steam Deck / ROG Ally resumes from sleep or when you press the gamepad Guide button.
+A [Decky Loader](https://decky.xyz) plugin that automatically wakes your TV and switches to the correct HDMI input when your Steam Deck, steamMachine or any device running steamos resumes from sleep or when you press the gamepad Guide button.
 
 Works with any TV that supports Wake-on-LAN (WOL) and the LG webOS SSAP protocol for HDMI switching (LG TVs from 2018+).
 
@@ -70,7 +70,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now usb-wake.service"
 
 ### 3. InputPlumber Suspend Service
 
-Enables proper input device cleanup/restoration on sleep/resume (fixes the Ally's built-in controller after wake).
+Enables proper input device cleanup/restoration on sleep/resume.
 
 ```bash
 ssh -t deck@<DEVICE_IP> "sudo systemctl enable inputplumber-suspend.service"
