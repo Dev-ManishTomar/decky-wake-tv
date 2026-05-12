@@ -185,19 +185,20 @@ class Plugin:
         for attempt in range(5):
             decky.logger.info(f"Auto-wake: HDMI switch attempt {attempt + 1}/5, waiting 3s...")
             await asyncio.sleep(3)
+            client = TVClient(ip)
             try:
-                client = TVClient(ip)
                 await client.connect()
                 decky.logger.info(f"Auto-wake: connected to TV at {ip}")
                 await client.register(client_key=key)
                 decky.logger.info("Auto-wake: registered with TV")
                 await client.switch_input(hdmi)
-                await client.close()
                 decky.logger.info(f"Auto-wake: HDMI switched to {hdmi} (attempt {attempt + 1})")
                 return
             except Exception as exc:
                 decky.logger.info(f"Auto-wake: attempt {attempt + 1} failed: {exc}")
                 continue
+            finally:
+                await client.close()
         decky.logger.warning("Auto-wake: HDMI switch failed after 5 attempts")
 
     # ------------------------------------------------------------------
@@ -301,16 +302,17 @@ class Plugin:
         if ip and key:
             for attempt in range(5):
                 await asyncio.sleep(3)
+                client = TVClient(ip)
                 try:
-                    client = TVClient(ip)
                     await client.connect()
                     await client.register(client_key=key)
                     await client.switch_input(hdmi)
-                    await client.close()
                     decky.logger.info(f"HDMI switched to {hdmi} (attempt {attempt + 1})")
                     return {"ok": True}
                 except Exception:
                     continue
+                finally:
+                    await client.close()
 
         return {"ok": True, "note": "WOL sent, HDMI switch may not have succeeded"}
 
