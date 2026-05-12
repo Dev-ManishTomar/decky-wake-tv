@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 from tv_client import TVClient, send_wol, discover_mac, is_reachable  # noqa: E402
 from input_watcher import watch_guide_button  # noqa: E402
 from sleep_watcher import watch_sleep_resume  # noqa: E402
+from usb_rebind import rebind_external_gamepads  # noqa: E402
 
 
 SETTINGS_FILE = "settings.json"
@@ -99,11 +100,40 @@ class Plugin:
 
     async def _watch_sleep_resume(self) -> None:
         try:
-            await watch_sleep_resume(on_resume=self._do_wake)
+            await watch_sleep_resume(on_resume=self._on_resume)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             decky.logger.error(f"Sleep watcher crashed: {exc}")
+
+    async def _on_resume(self) -> None:
+        """Called when system resumes: rebind gamepads and wait for network in parallel, then wake TV."""
+        import socket
+
+        async def _rebind():
+            try:
+                count = rebind_external_gamepads()
+                decky.logger.info(f"Post-resume: rebound {count} gamepad(s)")
+            except Exception as exc:
+                decky.logger.warning(f"Post-resume: gamepad rebind failed: {exc}")
+
+        async def _wait_for_network():
+            for i in range(15):
+                await asyncio.sleep(1)
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.settimeout(0.5)
+                    s.connect(("8.8.8.8", 80))
+                    s.close()
+                    decky.logger.info(f"Post-resume: network up after {i+1}s")
+                    return
+                except OSError:
+                    pass
+            decky.logger.warning("Post-resume: network not ready after 15s, trying wake anyway")
+
+        decky.logger.info("Post-resume: rebinding gamepads + waiting for network...")
+        await asyncio.gather(_rebind(), _wait_for_network())
+        await self._do_wake()
 
     async def _startup_wake(self) -> None:
         """

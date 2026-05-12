@@ -90,7 +90,7 @@ deploy() {
         "$SCRIPT_DIR/py_modules/tv_client.py" \
         "$SCRIPT_DIR/py_modules/input_watcher.py" \
         "$SCRIPT_DIR/py_modules/sleep_watcher.py" \
-        "$SCRIPT_DIR/py_modules/usb_wake.py" \
+        "$SCRIPT_DIR/py_modules/usb_rebind.py" \
         "${REMOTE}:${STAGING}/py_modules/"
 
     # Swap into plugin directory and restart Decky to reload the backend
