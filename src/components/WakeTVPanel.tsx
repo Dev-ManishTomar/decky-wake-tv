@@ -9,7 +9,7 @@ import {
   Spinner,
 } from "@decky/ui";
 import { call } from "@decky/api";
-import { FC, CSSProperties, useEffect, useState, useCallback } from "react";
+import { FC, CSSProperties, useEffect, useState, useCallback, useRef } from "react";
 import {
   FaPowerOff, FaPlug, FaSave,
   FaCircle, FaChevronRight,
@@ -110,9 +110,16 @@ export const WakeTVPanel: FC = () => {
     return () => { active = false; clearInterval(id); };
   }, [pollVersion]);
 
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    return () => { clearTimeout(feedbackTimer.current); };
+  }, []);
+
   const showFeedback = useCallback((msg: string) => {
+    clearTimeout(feedbackTimer.current);
     setFeedback(msg);
-    setTimeout(() => setFeedback(null), 5000);
+    feedbackTimer.current = setTimeout(() => setFeedback(null), 5000);
   }, []);
 
   const cycleHdmi = useCallback(() => {
