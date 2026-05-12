@@ -112,7 +112,8 @@ class Plugin:
 
         async def _rebind():
             try:
-                count = rebind_external_gamepads()
+                loop = asyncio.get_event_loop()
+                count = await loop.run_in_executor(None, rebind_external_gamepads)
                 decky.logger.info(f"Post-resume: rebound {count} gamepad(s)")
             except Exception as exc:
                 decky.logger.warning(f"Post-resume: gamepad rebind failed: {exc}")
