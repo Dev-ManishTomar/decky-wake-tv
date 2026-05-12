@@ -243,6 +243,7 @@ class TVClient:
         msg = {"type": "register", "id": self._next_id(), "payload": payload}
         await self._send_json(msg)
 
+        unexpected = 0
         while True:
             resp = await asyncio.wait_for(self._recv_json(), timeout=60)
             resp_type = resp.get("type", "")
@@ -254,6 +255,12 @@ class TVClient:
                 continue
             if resp_type == "error":
                 raise RuntimeError(f"Registration failed: {resp_payload}")
+
+            unexpected += 1
+            if unexpected >= 10:
+                raise RuntimeError(
+                    f"Registration failed: too many unexpected responses (last: {resp})"
+                )
 
     async def power_off(self) -> dict:
         return await self.send_command("ssap://system/turnOff")
