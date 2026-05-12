@@ -273,7 +273,8 @@ class Plugin:
             self._settings["client_key"] = key
             self._settings["paired"] = True
 
-            mac = discover_mac(ip)
+            loop = asyncio.get_event_loop()
+            mac = await loop.run_in_executor(None, discover_mac, ip)
             if mac:
                 self._settings["mac_address"] = mac
 
