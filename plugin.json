@@ -1,0 +1,11 @@
+{
+  "name": "Wake TV",
+  "author": "Dev-ManishTomar",
+  "flags": ["debug"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["utility", "tv", "wake-on-lan"],
+    "description": "Wake, sleep, and switch HDMI input on your TV directly from your Steam Deck.",
+    "image": ""
+  }
+}
