@@ -10,6 +10,7 @@ Works with any TV that supports Wake-on-LAN (WOL) and the LG webOS SSAP protocol
 - **Auto HDMI switch** - Automatically switch to the correct HDMI input after waking
 - **Gamepad Guide button wake** - Press the Guide/Home button on your gamepad to wake the TV
 - **Sleep/resume wake** - Automatically wake the TV when your device resumes from sleep
+- **Auto-disable built-in controller** - Automatically disables the built-in gamepad (e.g. ROG Ally controller) when an external controller is connected, and re-enables it when disconnected — eliminates the duplicate controller problem
 - **External gamepad fix** - Automatically rebinds external USB gamepads after resume when InputPlumber is not present (defers to InputPlumber's suspend service when available to avoid duplicate notifications)
 - **USB wakeup chain repair** - Re-enables USB hub wakeup flags after each resume so the gamepad can always wake the device from the next sleep
 - **Pair & forget** - One-time pairing with your LG TV, credentials persist across reboots
@@ -46,7 +47,23 @@ ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/bus/us
 ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/systemctl suspend' | sudo tee /etc/sudoers.d/zz-waketv-suspend && sudo chmod 440 /etc/sudoers.d/zz-waketv-suspend"
 ```
 
-### 2. USB Wake: Udev Rule + Boot Service
+### 2. Polkit Rule for Auto-Disable Built-in Controller
+
+Required for the "Auto-disable built-in controller" feature. Allows the plugin to toggle InputPlumber's virtual gamepad via D-Bus without interactive authentication. Decky's plugin sandbox drops supplementary groups, so the default InputPlumber polkit rules (which check for the `wheel` group) don't apply.
+
+```bash
+ssh -t deck@<DEVICE_IP> "sudo tee /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules > /dev/null << 'RULES'
+polkit.addRule(function(action, subject) {
+    if (action.id === \"org.shadowblip.Input.CompositeDevice.SetTargetDevices\" &&
+        subject.user === \"deck\") {
+        return polkit.Result.YES;
+    }
+});
+RULES
+sudo chmod 644 /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules"
+```
+
+### 3. USB Wake: Udev Rule + Boot Service
 
 The udev rule enables wakeup on USB dock hubs when they appear (handles hot-plug and boot timing). The boot service enables wakeup on root host controllers and ACPI wakeup sources.
 
@@ -86,7 +103,7 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl enable --now usb-wake.service"
 ```
 
-### 3. InputPlumber Suspend Service
+### 4. InputPlumber Suspend Service
 
 Enables proper input device cleanup/restoration on sleep/resume. When this service is enabled, the plugin automatically skips its own USB rebind (InputPlumber handles it), which avoids duplicate controller notifications on wake.
 
@@ -105,6 +122,18 @@ ssh -t deck@<DEVICE_IP> "sudo systemctl enable inputplumber-suspend.service"
 5. Plugin waits for the network to come up (polls every 1s)
 6. WOL magic packet is sent to the TV
 7. Plugin connects to the TV via WebSocket and switches to the configured HDMI input
+
+### Auto-Disable Built-in Controller
+
+When enabled in the plugin settings, the plugin continuously monitors connected gamepads:
+
+1. Polls `/dev/input/event*` every 3 seconds for gamepad-capable devices
+2. Classifies each device as built-in or external by resolving its sysfs path to a USB bus port
+3. When an external gamepad is detected, the built-in controller's USB port is unbound (`/sys/bus/usb/drivers/usb/unbind`)
+4. When all external gamepads are disconnected, the built-in controller is re-enabled (`/sys/bus/usb/drivers/usb/bind`)
+5. On plugin startup/shutdown, the built-in controller is always re-enabled as a safety net
+
+This uses the same sudoers rules as the external gamepad fix — no additional system setup required. Works with USB dongles, wired controllers, and Bluetooth gamepads.
 
 ### On Gamepad Guide Button Press (While Awake)
 
@@ -193,7 +222,8 @@ wake-tv/
 │   ├── tv_client.py           # LG webOS SSAP protocol (WebSocket, WOL, MAC discovery)
 │   ├── input_watcher.py       # Gamepad Guide button detection via /dev/input
 │   ├── sleep_watcher.py       # D-Bus PrepareForSleep signal monitoring
-│   └── usb_rebind.py          # USB rebind + wakeup chain repair after resume
+│   ├── usb_rebind.py          # USB rebind + wakeup chain repair after resume
+│   └── controller_manager.py  # Auto-disable built-in controller on external connect
 ├── src/
 │   ├── index.tsx              # Frontend plugin entry point
 │   └── components/
