@@ -91,6 +91,7 @@ deploy() {
         "$SCRIPT_DIR/py_modules/input_watcher.py" \
         "$SCRIPT_DIR/py_modules/sleep_watcher.py" \
         "$SCRIPT_DIR/py_modules/usb_rebind.py" \
+        "$SCRIPT_DIR/py_modules/controller_manager.py" \
         "${REMOTE}:${STAGING}/py_modules/"
 
     # Swap into plugin directory and restart Decky to reload the backend
@@ -133,7 +134,7 @@ case "$MODE" in
     --watch|-w)
         check_ssh
         log "Watch mode: will rebuild + deploy on every file change"
-        log "Watching src/, main.py, defaults/ ..."
+        log "Watching src/, main.py, py_modules/, defaults/ ..."
         echo ""
 
         # Initial deploy
@@ -148,6 +149,7 @@ case "$MODE" in
             fswatch -o \
                 "$SCRIPT_DIR/src" \
                 "$SCRIPT_DIR/main.py" \
+                "$SCRIPT_DIR/py_modules" \
                 "$SCRIPT_DIR/defaults" \
                 "$SCRIPT_DIR/plugin.json" \
             | while read -r; do
@@ -163,7 +165,7 @@ case "$MODE" in
             echo ""
             LAST_HASH=""
             while true; do
-                HASH=$(find "$SCRIPT_DIR/src" "$SCRIPT_DIR/main.py" "$SCRIPT_DIR/defaults" -type f -exec stat -f '%m' {} + 2>/dev/null | md5)
+                HASH=$(find "$SCRIPT_DIR/src" "$SCRIPT_DIR/main.py" "$SCRIPT_DIR/py_modules" "$SCRIPT_DIR/defaults" -type f -exec stat -f '%m' {} + 2>/dev/null | md5)
                 if [[ "$HASH" != "$LAST_HASH" && -n "$LAST_HASH" ]]; then
                     echo ""
                     log "Change detected, rebuilding..."
