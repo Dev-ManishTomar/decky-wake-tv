@@ -10,6 +10,11 @@ from tv_client import TVClient, send_wol, discover_mac, is_reachable  # noqa: E4
 from input_watcher import watch_guide_button  # noqa: E402
 from sleep_watcher import watch_sleep_resume  # noqa: E402
 from usb_rebind import rebind_external_gamepads, enable_usb_wakeup  # noqa: E402
+from controller_manager import (  # noqa: E402
+    watch_controller_toggle,
+    enable_builtin_gamepad,
+    get_controller_status as _get_controller_status,
+)
 
 
 SETTINGS_FILE = "settings.json"
@@ -21,6 +26,7 @@ DEFAULT_SETTINGS = {
     "paired": False,
     "wake_on_guide_button": True,
     "wake_on_resume": True,
+    "auto_disable_builtin_controller": False,
 }
 
 
@@ -29,6 +35,7 @@ class Plugin:
     _settings_path: str = ""
     _guide_task: asyncio.Task | None = None
     _sleep_task: asyncio.Task | None = None
+    _controller_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -46,8 +53,19 @@ class Plugin:
             f"hdmi={self._settings.get('hdmi_input', '')} "
             f"paired={self._settings.get('paired', False)} "
             f"guide={self._settings.get('wake_on_guide_button', True)} "
-            f"resume={self._settings.get('wake_on_resume', True)}"
+            f"resume={self._settings.get('wake_on_resume', True)} "
+            f"auto_disable_builtin={self._settings.get('auto_disable_builtin_controller', False)}"
         )
+
+        if self._settings.get("auto_disable_builtin_controller", False):
+            try:
+                loop = asyncio.get_event_loop()
+                ok = await loop.run_in_executor(None, enable_builtin_gamepad)
+                if ok:
+                    decky.logger.info("Startup: ensured built-in controller is enabled (clean slate)")
+            except Exception as exc:
+                decky.logger.warning(f"Startup: built-in enable failed: {exc}")
+
         self._start_watchers()
 
         if self._settings.get("wake_on_resume", True) and self._settings.get("mac_address"):
@@ -57,6 +75,14 @@ class Plugin:
 
     async def _unload(self) -> None:
         self._stop_watchers()
+        if self._settings.get("auto_disable_builtin_controller", False):
+            try:
+                loop = asyncio.get_event_loop()
+                ok = await loop.run_in_executor(None, enable_builtin_gamepad)
+                if ok:
+                    decky.logger.info("Unload: re-enabled built-in controller")
+            except Exception as exc:
+                decky.logger.warning(f"Unload: built-in enable failed: {exc}")
         decky.logger.info("Wake TV plugin unloaded")
 
     async def _uninstall(self) -> None:
@@ -77,6 +103,9 @@ class Plugin:
         if self._settings.get("wake_on_resume", True):
             self._sleep_task = loop.create_task(self._watch_sleep_resume())
             decky.logger.info("Sleep resume watcher started")
+        if self._settings.get("auto_disable_builtin_controller", False):
+            self._controller_task = loop.create_task(self._watch_controller_toggle())
+            decky.logger.info("Controller toggle watcher started")
 
     def _stop_watchers(self) -> None:
         if self._guide_task and not self._guide_task.done():
@@ -85,6 +114,9 @@ class Plugin:
         if self._sleep_task and not self._sleep_task.done():
             self._sleep_task.cancel()
             self._sleep_task = None
+        if self._controller_task and not self._controller_task.done():
+            self._controller_task.cancel()
+            self._controller_task = None
 
     def _restart_watchers(self) -> None:
         self._stop_watchers()
@@ -105,6 +137,20 @@ class Plugin:
             pass
         except Exception as exc:
             decky.logger.error(f"Sleep watcher crashed: {exc}")
+
+    async def _watch_controller_toggle(self) -> None:
+        try:
+            async def _on_toggle(builtin_disabled: bool, external_count: int):
+                state = "disabled" if builtin_disabled else "enabled"
+                decky.logger.info(
+                    f"Controller toggle: built-in {state}, {external_count} external gamepad(s)"
+                )
+
+            await watch_controller_toggle(on_change=_on_toggle)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            decky.logger.error(f"Controller toggle watcher crashed: {exc}")
 
     async def _on_resume(self) -> None:
         """Called when system resumes: rebind gamepads and wait for network in parallel, then wake TV."""
@@ -243,6 +289,7 @@ class Plugin:
             "paired": self._settings.get("paired", False),
             "wake_on_guide_button": self._settings.get("wake_on_guide_button", True),
             "wake_on_resume": self._settings.get("wake_on_resume", True),
+            "auto_disable_builtin_controller": self._settings.get("auto_disable_builtin_controller", False),
         }
 
     async def save_settings(
@@ -252,17 +299,30 @@ class Plugin:
         mac_address: str,
         wake_on_guide_button: bool = True,
         wake_on_resume: bool = True,
+        auto_disable_builtin_controller: bool = False,
     ) -> dict:
+        was_controller_toggle = self._settings.get("auto_disable_builtin_controller", False)
         self._settings["tv_ip"] = tv_ip.strip()
         self._settings["hdmi_input"] = hdmi_input.strip()
         self._settings["mac_address"] = mac_address.strip()
         self._settings["wake_on_guide_button"] = wake_on_guide_button
         self._settings["wake_on_resume"] = wake_on_resume
+        self._settings["auto_disable_builtin_controller"] = auto_disable_builtin_controller
         self._save_settings_to_disk()
         self._restart_watchers()
+
+        if was_controller_toggle and not auto_disable_builtin_controller:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, enable_builtin_gamepad)
+                decky.logger.info("Controller toggle disabled: re-enabled built-in controller")
+            except Exception as exc:
+                decky.logger.warning(f"Failed to re-enable built-in on toggle disable: {exc}")
+
         decky.logger.info(
             f"Settings saved: ip={tv_ip} hdmi={hdmi_input} "
-            f"guide={wake_on_guide_button} resume={wake_on_resume}"
+            f"guide={wake_on_guide_button} resume={wake_on_resume} "
+            f"auto_disable_builtin={auto_disable_builtin_controller}"
         )
         return {"ok": True}
 
@@ -372,3 +432,7 @@ class Plugin:
             return {"reachable": False}
         reachable = await is_reachable(ip)
         return {"reachable": reachable}
+
+    async def get_controller_status(self) -> dict:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _get_controller_status)

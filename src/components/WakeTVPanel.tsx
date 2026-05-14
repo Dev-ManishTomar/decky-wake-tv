@@ -26,6 +26,12 @@ interface Settings {
   paired: boolean;
   wake_on_guide_button: boolean;
   wake_on_resume: boolean;
+  auto_disable_builtin_controller: boolean;
+}
+
+interface ControllerStatus {
+  builtin_active: boolean;
+  external_count: number;
 }
 
 interface OkResult {
@@ -79,6 +85,8 @@ export const WakeTVPanel: FC = () => {
   const [reachable, setReachable] = useState(false);
   const [wakeOnGuide, setWakeOnGuide] = useState(true);
   const [wakeOnResume, setWakeOnResume] = useState(true);
+  const [autoDisableBuiltin, setAutoDisableBuiltin] = useState(false);
+  const [controllerStatus, setControllerStatus] = useState<ControllerStatus | null>(null);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -94,6 +102,7 @@ export const WakeTVPanel: FC = () => {
         setPaired(s.paired);
         setWakeOnGuide(s.wake_on_guide_button);
         setWakeOnResume(s.wake_on_resume);
+        setAutoDisableBuiltin(s.auto_disable_builtin_controller);
       })
       .catch(() => {});
   }, []);
@@ -109,6 +118,22 @@ export const WakeTVPanel: FC = () => {
     const id = setInterval(check, 15_000);
     return () => { active = false; clearInterval(id); };
   }, [pollVersion]);
+
+  useEffect(() => {
+    if (!autoDisableBuiltin) {
+      setControllerStatus(null);
+      return;
+    }
+    let active = true;
+    const poll = () => {
+      call<[], ControllerStatus>("get_controller_status")
+        .then((s) => { if (active) setControllerStatus(s); })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 5_000);
+    return () => { active = false; clearInterval(id); };
+  }, [autoDisableBuiltin, pollVersion]);
 
   const feedbackTimer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -132,8 +157,8 @@ export const WakeTVPanel: FC = () => {
   const handleSave = useCallback(async () => {
     setBusy("save");
     try {
-      await call<[string, string, string, boolean, boolean], OkResult>(
-        "save_settings", tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume
+      await call<[string, string, string, boolean, boolean, boolean], OkResult>(
+        "save_settings", tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume, autoDisableBuiltin
       );
       setPollVersion((v) => v + 1);
       showFeedback("Settings saved");
@@ -142,7 +167,7 @@ export const WakeTVPanel: FC = () => {
     } finally {
       setBusy(null);
     }
-  }, [tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume, showFeedback]);
+  }, [tvIp, hdmiInput, macAddress, wakeOnGuide, wakeOnResume, autoDisableBuiltin, showFeedback]);
 
   const handlePair = useCallback(async () => {
     setBusy("pair");
@@ -252,6 +277,45 @@ export const WakeTVPanel: FC = () => {
           checked={wakeOnResume}
           onChange={(val) => setWakeOnResume(val)}
         />
+
+        <ToggleField
+          label="Auto-disable built-in controller"
+          description="Disable built-in gamepad when an external controller is connected"
+          checked={autoDisableBuiltin}
+          onChange={(val) => setAutoDisableBuiltin(val)}
+        />
+
+        {autoDisableBuiltin && controllerStatus && (
+          <PanelSectionRow>
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              background: "rgba(255,255,255,0.04)",
+              fontSize: "12px",
+              opacity: 0.85,
+            }}>
+              <span>
+                <FaCircle style={{
+                  fontSize: "8px",
+                  marginRight: "4px",
+                  color: controllerStatus.builtin_active ? "#4caf50" : "#f44336",
+                }} />
+                Built-in: {controllerStatus.builtin_active ? "active" : "disabled"}
+              </span>
+              <span>
+                <FaCircle style={{
+                  fontSize: "8px",
+                  marginRight: "4px",
+                  color: controllerStatus.external_count > 0 ? "#4caf50" : "#666",
+                }} />
+                External: {controllerStatus.external_count}
+              </span>
+            </div>
+          </PanelSectionRow>
+        )}
 
         <PanelSectionRow>
           <ButtonItem onClick={handleSave} disabled={busy !== null} layout="below">
