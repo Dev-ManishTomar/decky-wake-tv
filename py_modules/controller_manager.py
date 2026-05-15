@@ -376,16 +376,20 @@ async def watch_controller_toggle(on_change=None) -> None:
                         if elite_count == 0:
                             logger.warning("External elite setup failed, re-enabling built-in as fallback")
                             target = original_target_type or DEFAULT_TARGET_TYPE
-                            _set_target_devices(composite_path, [target])
-                            builtin_disabled = False
+                            if _set_target_devices(composite_path, [target]):
+                                builtin_disabled = False
+                            else:
+                                logger.error("Failed to re-enable built-in after elite setup failure")
                         else:
                             logger.info(f"Set {elite_count} external controller(s) to {EXTERNAL_TARGET_TYPE}")
                     except Exception as exc:
                         logger.error(f"External elite setup crashed: {exc}, re-enabling built-in")
-                        target = original_target_type or DEFAULT_TARGET_TYPE
-                        _set_target_devices(composite_path, [target])
                         _disable_external_management()
-                        builtin_disabled = False
+                        target = original_target_type or DEFAULT_TARGET_TYPE
+                        if _set_target_devices(composite_path, [target]):
+                            builtin_disabled = False
+                        else:
+                            logger.error("Failed to re-enable built-in after elite setup crash")
 
                     if on_change:
                         try:
