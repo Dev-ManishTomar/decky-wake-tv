@@ -31,7 +31,10 @@ DEBOUNCE_STABLE_CYCLES = 2
 INPUTPLUMBER_BUS = "org.shadowblip.InputPlumber"
 COMPOSITE_IFACE = "org.shadowblip.Input.CompositeDevice"
 COMPOSITE_BASE = "/org/shadowblip/InputPlumber/CompositeDevice"
+MANAGER_PATH = "/org/shadowblip/InputPlumber/Manager"
+MANAGER_IFACE = "org.shadowblip.InputManager"
 DEFAULT_TARGET_TYPE = "deck-uhid"
+EXTERNAL_TARGET_TYPE = "xbox-elite"
 
 
 def _read_sysfs(path: str) -> str:
@@ -216,6 +219,77 @@ def _has_target_gamepad(composite_path: str) -> bool:
     return "as 0" not in val or not val.strip().endswith("0")
 
 
+def _set_manage_all_devices(enabled: bool) -> bool:
+    """Toggle InputPlumber's ManageAllDevices flag via D-Bus."""
+    val = "true" if enabled else "false"
+    ok, _ = _busctl(
+        "set-property", INPUTPLUMBER_BUS, MANAGER_PATH,
+        MANAGER_IFACE, "ManageAllDevices", "b", val,
+    )
+    if ok:
+        logger.info(f"ManageAllDevices set to {val}")
+    return ok
+
+
+def _find_external_composites(builtin_path: str | None) -> list[str]:
+    """Find InputPlumber CompositeDevice paths for external controllers.
+
+    Scans CompositeDevice0..9 and returns paths that are NOT the built-in.
+    """
+    externals = []
+    for i in range(10):
+        path = f"{COMPOSITE_BASE}{i}"
+        if path == builtin_path:
+            continue
+        ok, name = _busctl(
+            "get-property", INPUTPLUMBER_BUS, path,
+            COMPOSITE_IFACE, "Name",
+        )
+        if not ok:
+            break
+        if name.startswith('s "'):
+            name = name[3:].rstrip('"')
+        if any(kw in name.upper() for kw in ("ASUS", "ROG", "ALLY", "LEGION", "STEAM DECK")):
+            continue
+        logger.info(f"Found external composite device: {name} at {path}")
+        externals.append(path)
+    return externals
+
+
+def _enable_external_as_elite(builtin_path: str | None) -> int:
+    """Set ManageAllDevices, discover external composites, set them to xbox-elite.
+
+    ManageAllDevices stays true while the external controller is connected so
+    InputPlumber keeps managing it. It is reverted to false on disconnect.
+
+    Returns count of external composites successfully set.
+    """
+    if not _set_manage_all_devices(True):
+        return 0
+
+    import time
+    count = 0
+    for attempt in range(5):
+        time.sleep(1)
+        externals = _find_external_composites(builtin_path)
+        if externals:
+            for ext_path in externals:
+                if _set_target_devices(ext_path, [EXTERNAL_TARGET_TYPE]):
+                    count += 1
+                    logger.info(f"External controller set to {EXTERNAL_TARGET_TYPE} at {ext_path}")
+            return count
+        logger.info(f"Waiting for external composite device ({attempt + 1}/5)...")
+
+    _set_manage_all_devices(False)
+    logger.warning("No external composite device appeared after ManageAllDevices=true")
+    return 0
+
+
+def _disable_external_management() -> None:
+    """Revert ManageAllDevices to false."""
+    _set_manage_all_devices(False)
+
+
 def disable_builtin_gamepad() -> bool:
     """Disable the built-in controller's virtual gamepad via InputPlumber."""
     composite = _find_builtin_composite()
@@ -227,6 +301,7 @@ def disable_builtin_gamepad() -> bool:
 
 def enable_builtin_gamepad(target_type: str | None = None) -> bool:
     """Re-enable the built-in controller's virtual gamepad via InputPlumber."""
+    _disable_external_management()
     composite = _find_builtin_composite()
     if not composite:
         logger.warning("No built-in composite device found in InputPlumber")
@@ -292,6 +367,13 @@ async def watch_controller_toggle(on_change=None) -> None:
                     logger.info(
                         f"Built-in controller disabled (external: {ext_names})"
                     )
+
+                    loop = asyncio.get_event_loop()
+                    elite_count = await loop.run_in_executor(
+                        None, _enable_external_as_elite, composite_path
+                    )
+                    logger.info(f"Set {elite_count} external controller(s) to {EXTERNAL_TARGET_TYPE}")
+
                     if on_change:
                         try:
                             await on_change(True, len(external))
@@ -299,6 +381,8 @@ async def watch_controller_toggle(on_change=None) -> None:
                             pass
 
             elif not external_present and builtin_disabled:
+                _disable_external_management()
+
                 target = original_target_type or DEFAULT_TARGET_TYPE
                 if _set_target_devices(composite_path, [target]):
                     builtin_disabled = False

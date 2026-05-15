@@ -53,13 +53,20 @@ def _device_has_key_capability(event_path: str, key_code: int) -> bool:
 
 
 def find_gamepad_devices(button_code: int = BTN_MODE) -> list[str]:
-    """Find /dev/input/event* devices that can emit the target button code."""
+    """Find /dev/input/event* devices that can emit the target button code.
+
+    Skips InputPlumber virtual devices (no phys path) to avoid watching
+    devices that churn when ManageAllDevices is enabled.
+    """
     devices = []
     for path in sorted(glob.glob("/dev/input/event*")):
         if _device_has_key_capability(path, button_code):
-            name = _read_sysfs(
-                f"/sys/class/input/{os.path.basename(path)}/device/name"
-            )
+            basename = os.path.basename(path)
+            name = _read_sysfs(f"/sys/class/input/{basename}/device/name")
+            phys = _read_sysfs(f"/sys/class/input/{basename}/device/phys")
+            if not phys:
+                logger.info(f"Skipping virtual device: {name or 'unknown'} ({path})")
+                continue
             devices.append(path)
             logger.info(f"Gamepad found: {name or 'unknown'} ({path})")
     return devices

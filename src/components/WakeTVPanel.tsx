@@ -135,7 +135,7 @@ export const WakeTVPanel: FC = () => {
     return () => { active = false; clearInterval(id); };
   }, [autoDisableBuiltin, pollVersion]);
 
-  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>();
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     return () => { clearTimeout(feedbackTimer.current); };
