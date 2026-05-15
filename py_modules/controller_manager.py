@@ -7,9 +7,9 @@ gamepad is detected, the built-in device's target is set to empty (removing
 the virtual gamepad). When all external gamepads disconnect, the target
 is restored to "deck-uhid" (the default Valve Steam Deck Controller).
 
-External gamepads are detected by scanning /dev/input/event* for devices
-with gamepad capabilities that are NOT on built-in USB buses and NOT
-InputPlumber virtual devices.
+External controller emulation (e.g. Xbox Elite) is handled by
+InputPlumber's device config at /etc/inputplumber/devices/, not by
+this module.
 """
 
 import asyncio
@@ -25,14 +25,12 @@ BTN_SOUTH = 304
 BTN_MODE = 316
 BUILTIN_USB_BUSES = {"1-2", "1-3"}
 
-POLL_INTERVAL = 3
-DEBOUNCE_STABLE_CYCLES = 2
+POLL_INTERVAL = 2
+DEBOUNCE_STABLE_CYCLES = 1
 
 INPUTPLUMBER_BUS = "org.shadowblip.InputPlumber"
 COMPOSITE_IFACE = "org.shadowblip.Input.CompositeDevice"
 COMPOSITE_BASE = "/org/shadowblip/InputPlumber/CompositeDevice"
-MANAGER_PATH = "/org/shadowblip/InputPlumber/Manager"
-MANAGER_IFACE = "org.shadowblip.InputManager"
 DEFAULT_TARGET_TYPE = "deck-uhid"
 EXTERNAL_TARGET_TYPE = "xbox-elite"
 
@@ -140,11 +138,7 @@ def _busctl(*args: str, timeout: int = 5) -> tuple[bool, str]:
 
 
 def _find_builtin_composite() -> str | None:
-    """Find the InputPlumber CompositeDevice path for the built-in controller.
-
-    Scans CompositeDevice0..9 and returns the first one named like
-    'ASUS ROG Ally' or similar built-in device patterns.
-    """
+    """Find the InputPlumber CompositeDevice path for the built-in controller."""
     for i in range(10):
         path = f"{COMPOSITE_BASE}{i}"
         ok, name = _busctl(
@@ -153,7 +147,6 @@ def _find_builtin_composite() -> str | None:
         )
         if not ok:
             break
-        # name looks like: s "ASUS ROG Ally"
         if name.startswith('s "'):
             name = name[3:].rstrip('"')
         if any(kw in name.upper() for kw in ("ASUS", "ROG", "ALLY", "LEGION", "STEAM DECK")):
@@ -170,8 +163,6 @@ def _get_current_target_type(composite_path: str) -> str | None:
     )
     if not ok or not val:
         return None
-    # val looks like: as 1 "/org/shadowblip/InputPlumber/devices/target/gamepad0"
-    # If targets are empty: as 0
     if " 0" in val and val.strip().endswith(" 0"):
         return None
 
@@ -214,80 +205,36 @@ def _has_target_gamepad(composite_path: str) -> bool:
         COMPOSITE_IFACE, "TargetDevices",
     )
     if not ok:
-        return True  # assume active if we can't read
-    # "as 0" means empty, "as 1 ..." means has targets
+        return True
     return "as 0" not in val or not val.strip().endswith("0")
 
 
-def _set_manage_all_devices(enabled: bool) -> bool:
-    """Toggle InputPlumber's ManageAllDevices flag via D-Bus."""
-    val = "true" if enabled else "false"
-    ok, _ = _busctl(
-        "set-property", INPUTPLUMBER_BUS, MANAGER_PATH,
-        MANAGER_IFACE, "ManageAllDevices", "b", val,
-    )
-    if ok:
-        logger.info(f"ManageAllDevices set to {val}")
-    return ok
+def _ensure_external_target(builtin_path: str | None) -> None:
+    """Set any non-builtin composite devices to xbox-elite.
 
-
-def _find_external_composites(builtin_path: str | None) -> list[str]:
-    """Find InputPlumber CompositeDevice paths for external controllers.
-
-    Scans CompositeDevice0..9 and returns paths that are NOT the built-in.
+    InputPlumber's device config creates the composite with the right target,
+    but steamos-manager may override it to deck-uhid. This corrects it.
     """
-    externals = []
+    found = 0
     for i in range(10):
         path = f"{COMPOSITE_BASE}{i}"
         if path == builtin_path:
             continue
-        ok, name = _busctl(
+        ok, raw = _busctl(
             "get-property", INPUTPLUMBER_BUS, path,
             COMPOSITE_IFACE, "Name",
         )
         if not ok:
+            logger.info(f"_ensure_external_target: no device at index {i}, stopping scan")
             break
-        if name.startswith('s "'):
-            name = name[3:].rstrip('"')
+        name = raw[3:].rstrip('"') if raw.startswith('s "') else raw
+        logger.info(f"_ensure_external_target: found {name} at {path}")
         if any(kw in name.upper() for kw in ("ASUS", "ROG", "ALLY", "LEGION", "STEAM DECK")):
             continue
-        logger.info(f"Found external composite device: {name} at {path}")
-        externals.append(path)
-    return externals
-
-
-def _enable_external_as_elite(builtin_path: str | None) -> int:
-    """Set ManageAllDevices, discover external composites, set them to xbox-elite.
-
-    ManageAllDevices stays true while the external controller is connected so
-    InputPlumber keeps managing it. It is reverted to false on disconnect.
-
-    Returns count of external composites successfully set.
-    """
-    if not _set_manage_all_devices(True):
-        return 0
-
-    import time
-    count = 0
-    for attempt in range(5):
-        time.sleep(1)
-        externals = _find_external_composites(builtin_path)
-        if externals:
-            for ext_path in externals:
-                if _set_target_devices(ext_path, [EXTERNAL_TARGET_TYPE]):
-                    count += 1
-                    logger.info(f"External controller set to {EXTERNAL_TARGET_TYPE} at {ext_path}")
-            return count
-        logger.info(f"Waiting for external composite device ({attempt + 1}/5)...")
-
-    _set_manage_all_devices(False)
-    logger.warning("No external composite device appeared after ManageAllDevices=true")
-    return 0
-
-
-def _disable_external_management() -> None:
-    """Revert ManageAllDevices to false."""
-    _set_manage_all_devices(False)
+        found += 1
+        _set_target_devices(path, [EXTERNAL_TARGET_TYPE])
+    if found == 0:
+        logger.warning("_ensure_external_target: no external composite devices found")
 
 
 def disable_builtin_gamepad() -> bool:
@@ -301,7 +248,6 @@ def disable_builtin_gamepad() -> bool:
 
 def enable_builtin_gamepad(target_type: str | None = None) -> bool:
     """Re-enable the built-in controller's virtual gamepad via InputPlumber."""
-    _disable_external_management()
     composite = _find_builtin_composite()
     if not composite:
         logger.warning("No built-in composite device found in InputPlumber")
@@ -364,42 +310,15 @@ async def watch_controller_toggle(on_change=None) -> None:
                 if _set_target_devices(composite_path, []):
                     builtin_disabled = True
                     ext_names = ", ".join(d["name"] for d in external)
-                    logger.info(
-                        f"Built-in controller disabled (external: {ext_names})"
-                    )
-
-                    try:
-                        loop = asyncio.get_event_loop()
-                        elite_count = await loop.run_in_executor(
-                            None, _enable_external_as_elite, composite_path
-                        )
-                        if elite_count == 0:
-                            logger.warning("External elite setup failed, re-enabling built-in as fallback")
-                            target = original_target_type or DEFAULT_TARGET_TYPE
-                            if _set_target_devices(composite_path, [target]):
-                                builtin_disabled = False
-                            else:
-                                logger.error("Failed to re-enable built-in after elite setup failure")
-                        else:
-                            logger.info(f"Set {elite_count} external controller(s) to {EXTERNAL_TARGET_TYPE}")
-                    except Exception as exc:
-                        logger.error(f"External elite setup crashed: {exc}, re-enabling built-in")
-                        _disable_external_management()
-                        target = original_target_type or DEFAULT_TARGET_TYPE
-                        if _set_target_devices(composite_path, [target]):
-                            builtin_disabled = False
-                        else:
-                            logger.error("Failed to re-enable built-in after elite setup crash")
-
+                    logger.info(f"Built-in controller disabled (external: {ext_names})")
+                    _ensure_external_target(composite_path)
                     if on_change:
                         try:
-                            await on_change(builtin_disabled, len(external))
+                            await on_change(True, len(external))
                         except Exception:
                             pass
 
             elif not external_present and builtin_disabled:
-                _disable_external_management()
-
                 target = original_target_type or DEFAULT_TARGET_TYPE
                 if _set_target_devices(composite_path, [target]):
                     builtin_disabled = False
