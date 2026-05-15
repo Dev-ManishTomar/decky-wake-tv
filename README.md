@@ -10,7 +10,7 @@ Works with any TV that supports Wake-on-LAN (WOL) and the LG webOS SSAP protocol
 - **Auto HDMI switch** - Automatically switch to the correct HDMI input after waking
 - **Gamepad Guide button wake** - Press the Guide/Home button on your gamepad to wake the TV
 - **Sleep/resume wake** - Automatically wake the TV when your device resumes from sleep
-- **Auto-disable built-in controller** - Automatically disables the built-in gamepad (e.g. ROG Ally controller) when an external controller is connected, and re-enables it when disconnected — eliminates the duplicate controller problem
+- **Auto-disable built-in controller** - Automatically disables the built-in gamepad (e.g. ROG Ally controller) when an external controller is connected, and re-enables it when disconnected — eliminates the duplicate controller problem. External controllers are emulated as Xbox Elite for back paddle support via InputPlumber.
 - **External gamepad fix** - Automatically rebinds external USB gamepads after resume when InputPlumber is not present (defers to InputPlumber's suspend service when available to avoid duplicate notifications)
 - **USB wakeup chain repair** - Re-enables USB hub wakeup flags after each resume so the gamepad can always wake the device from the next sleep
 - **Pair & forget** - One-time pairing with your LG TV, credentials persist across reboots
@@ -47,14 +47,15 @@ ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/bus/us
 ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/systemctl suspend' | sudo tee /etc/sudoers.d/zz-waketv-suspend && sudo chmod 440 /etc/sudoers.d/zz-waketv-suspend"
 ```
 
-### 2. Polkit Rule for Auto-Disable Built-in Controller
+### 2. Polkit Rule for Controller Management
 
-Required for the "Auto-disable built-in controller" feature. Allows the plugin to toggle InputPlumber's virtual gamepad via D-Bus without interactive authentication. Decky's plugin sandbox drops supplementary groups, so the default InputPlumber polkit rules (which check for the `wheel` group) don't apply.
+Required for the "Auto-disable built-in controller" feature. Allows the plugin to toggle InputPlumber's virtual gamepad and manage external controllers via D-Bus without interactive authentication. Decky's plugin sandbox drops supplementary groups, so the default InputPlumber polkit rules (which check for the `wheel` group) don't apply.
 
 ```bash
 ssh -t deck@<DEVICE_IP> "sudo tee /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules > /dev/null << 'RULES'
 polkit.addRule(function(action, subject) {
-    if (action.id === \"org.shadowblip.Input.CompositeDevice.SetTargetDevices\" &&
+    if ((action.id === \"org.shadowblip.Input.CompositeDevice.SetTargetDevices\" ||
+         action.id === \"org.shadowblip.InputPlumber.SetManageAllDevices\") &&
         subject.user === \"deck\") {
         return polkit.Result.YES;
     }
@@ -111,6 +112,25 @@ Enables proper input device cleanup/restoration on sleep/resume. When this servi
 ssh -t deck@<DEVICE_IP> "sudo systemctl enable inputplumber-suspend.service"
 ```
 
+### 5. (Optional) Prioritize Wired LAN over WiFi
+
+If your device is connected to both WiFi and a wired dock/hub, NetworkManager may prefer WiFi. These commands set the wired connection to higher priority so traffic always routes through LAN. Changes persist across reboots and SteamOS updates.
+
+```bash
+ssh -t deck@<DEVICE_IP> "\
+  sudo nmcli connection modify 'LAN' ipv4.route-metric 100 ipv6.route-metric 100 && \
+  sudo nmcli connection modify 'LAN' connection.autoconnect-priority 100"
+```
+
+Then lower the priority on each WiFi network you use:
+
+```bash
+ssh -t deck@<DEVICE_IP> "\
+  sudo nmcli connection modify '<WIFI_NAME>' ipv4.route-metric 700 ipv6.route-metric 700"
+```
+
+> **Note:** Replace `LAN` with your wired connection name and `<WIFI_NAME>` with each WiFi network name. Run `nmcli connection show` on the device to see all connection names. Lower metric = higher priority.
+
 ## How It Works
 
 ### On Resume from Sleep
@@ -129,11 +149,12 @@ When enabled in the plugin settings, the plugin continuously monitors connected 
 
 1. Polls `/dev/input/event*` every 3 seconds for gamepad-capable devices
 2. Classifies each device as built-in or external by resolving its sysfs path to a USB bus port
-3. When an external gamepad is detected, the built-in controller's USB port is unbound (`/sys/bus/usb/drivers/usb/unbind`)
-4. When all external gamepads are disconnected, the built-in controller is re-enabled (`/sys/bus/usb/drivers/usb/bind`)
-5. On plugin startup/shutdown, the built-in controller is always re-enabled as a safety net
+3. When an external gamepad is detected, the built-in controller's virtual gamepad is removed via InputPlumber's D-Bus API (`SetTargetDevices` empty on the built-in CompositeDevice)
+4. InputPlumber's `ManageAllDevices` is enabled so the external controller is absorbed and emulated as Xbox Elite (`xbox-elite` target type), providing back paddle and full button support
+5. When all external gamepads are disconnected, the built-in controller is restored and `ManageAllDevices` is reverted
+6. On plugin startup/shutdown, the built-in controller is always re-enabled as a safety net
 
-This uses the same sudoers rules as the external gamepad fix — no additional system setup required. Works with USB dongles, wired controllers, and Bluetooth gamepads.
+Requires the polkit rule (section 2 of System Setup). Works with USB dongles, wired controllers, and Bluetooth gamepads.
 
 ### On Gamepad Guide Button Press (While Awake)
 
