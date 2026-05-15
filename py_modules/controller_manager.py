@@ -368,15 +368,28 @@ async def watch_controller_toggle(on_change=None) -> None:
                         f"Built-in controller disabled (external: {ext_names})"
                     )
 
-                    loop = asyncio.get_event_loop()
-                    elite_count = await loop.run_in_executor(
-                        None, _enable_external_as_elite, composite_path
-                    )
-                    logger.info(f"Set {elite_count} external controller(s) to {EXTERNAL_TARGET_TYPE}")
+                    try:
+                        loop = asyncio.get_event_loop()
+                        elite_count = await loop.run_in_executor(
+                            None, _enable_external_as_elite, composite_path
+                        )
+                        if elite_count == 0:
+                            logger.warning("External elite setup failed, re-enabling built-in as fallback")
+                            target = original_target_type or DEFAULT_TARGET_TYPE
+                            _set_target_devices(composite_path, [target])
+                            builtin_disabled = False
+                        else:
+                            logger.info(f"Set {elite_count} external controller(s) to {EXTERNAL_TARGET_TYPE}")
+                    except Exception as exc:
+                        logger.error(f"External elite setup crashed: {exc}, re-enabling built-in")
+                        target = original_target_type or DEFAULT_TARGET_TYPE
+                        _set_target_devices(composite_path, [target])
+                        _disable_external_management()
+                        builtin_disabled = False
 
                     if on_change:
                         try:
-                            await on_change(True, len(external))
+                            await on_change(builtin_disabled, len(external))
                         except Exception:
                             pass
 
