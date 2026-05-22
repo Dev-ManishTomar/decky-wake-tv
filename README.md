@@ -35,73 +35,127 @@ The MAC address is auto-discovered during pairing.
 
 The following system-level configuration enables advanced features like gamepad wake-from-sleep, external gamepad fix, and Wake-on-LAN to the device itself. These commands require SSH access to your device.
 
-### 1. Sudoers Rules
+### How Persistence Works
 
-These allow the plugin to rebind USB devices and enable USB wakeup after resume.
+SteamOS uses an A/B rootfs with an `/etc` overlay. Updates reset this overlay, but SteamOS 3.6+ provides an official whitelist mechanism: files listed in `/etc/atomic-update.conf.d/*.conf` are preserved across updates. The keeplist directory itself is preserved by the system keeplist at `/usr/lib/rauc/atomic-update-keep.conf`, so custom entries survive too.
 
-```bash
-# USB unbind/bind for external gamepad fix + wakeup sysfs writes
-ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/bus/usb/drivers/usb/unbind, /usr/bin/tee /sys/bus/usb/drivers/usb/bind, /usr/bin/tee /sys/bus/usb/devices/*/power/wakeup' | sudo tee /etc/sudoers.d/zz-waketv-usb && sudo chmod 440 /etc/sudoers.d/zz-waketv-usb"
+The setup below registers all WakeTV config files with this mechanism. Zero runtime overhead — the OS preserves them natively during the update process. The only boot-time service is for volatile USB/ACPI wakeup flags (sysfs entries that the kernel resets on every reboot).
 
-# (Optional) Allow remote suspend without password - needed for Homebridge/Apple Home integration
-ssh -t deck@<DEVICE_IP> "echo 'deck ALL=(ALL) NOPASSWD: /usr/bin/systemctl suspend' | sudo tee /etc/sudoers.d/zz-waketv-suspend && sudo chmod 440 /etc/sudoers.d/zz-waketv-suspend"
-```
+### 1. Config Files (requires sudo)
 
-### 2. Polkit Rule for Controller Management
-
-Required for the "Auto-disable built-in controller" feature. Allows the plugin to toggle InputPlumber's virtual gamepad and manage external controllers via D-Bus without interactive authentication. Decky's plugin sandbox drops supplementary groups, so the default InputPlumber polkit rules (which check for the `wheel` group) don't apply.
+All config files are installed once and persist across SteamOS updates via the atomic update keeplist.
 
 ```bash
-ssh -t deck@<DEVICE_IP> "sudo tee /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules > /dev/null << 'RULES'
+ssh -t deck@<DEVICE_IP> "sudo /bin/sh -c '
+
+# Register all WakeTV files with the SteamOS atomic update keeplist
+mkdir -p /etc/atomic-update.conf.d
+cat > /etc/atomic-update.conf.d/waketv.conf << KEEPLIST
+/etc/sudoers.d/zz-waketv-usb
+/etc/sudoers.d/zz-waketv-suspend
+/etc/udev/rules.d/99-waketv-usb-wake.rules
+/etc/polkit-1/rules.d/zz-waketv-inputplumber.rules
+/etc/inputplumber/devices.d/50-external-gamepad.yaml
+KEEPLIST
+
+# Sudoers: USB unbind/bind for external gamepad fix + wakeup sysfs writes
+echo \"deck ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/bus/usb/drivers/usb/unbind, /usr/bin/tee /sys/bus/usb/drivers/usb/bind, /usr/bin/tee /sys/bus/usb/devices/*/power/wakeup\" > /etc/sudoers.d/zz-waketv-usb
+chmod 440 /etc/sudoers.d/zz-waketv-usb
+
+# Sudoers: remote suspend (needed for Homebridge/Apple Home)
+echo \"deck ALL=(ALL) NOPASSWD: /usr/bin/systemctl suspend\" > /etc/sudoers.d/zz-waketv-suspend
+chmod 440 /etc/sudoers.d/zz-waketv-suspend
+
+# Udev: enable wakeup on dock USB hubs (Genesys Logic) on hot-plug
+cat > /etc/udev/rules.d/99-waketv-usb-wake.rules << UDEV
+ACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"05e3\", ATTR{idProduct}==\"0610\", RUN+=\"/bin/sh -c '\\''echo enabled > /sys%p/power/wakeup'\\''\"
+ACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"05e3\", ATTR{idProduct}==\"0626\", RUN+=\"/bin/sh -c '\\''echo enabled > /sys%p/power/wakeup'\\''\"
+UDEV
+udevadm control --reload-rules
+
+# Polkit: allow plugin to toggle InputPlumber D-Bus API
+mkdir -p /etc/polkit-1/rules.d
+cat > /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules << POLKIT
 polkit.addRule(function(action, subject) {
-    if ((action.id === \"org.shadowblip.Input.CompositeDevice.SetTargetDevices\" ||
-         action.id === \"org.shadowblip.InputPlumber.SetManageAllDevices\") &&
+    if (action.id === \"org.shadowblip.Input.CompositeDevice.SetTargetDevices\" &&
         subject.user === \"deck\") {
         return polkit.Result.YES;
     }
 });
-RULES
-sudo chmod 644 /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules"
+POLKIT
+chmod 644 /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules
+'"
 ```
 
-### 3. USB Wake: Udev Rule + Boot Service
+### 2. (Optional) External Controller as Xbox Elite
 
-The udev rule enables wakeup on USB dock hubs when they appear (handles hot-plug and boot timing). The boot service enables wakeup on root host controllers and ACPI wakeup sources.
-
-> **Note:** The hub VID:PID (`05e3:0610` and `05e3:0626`) match common Genesys Logic USB hubs used in docks. The ACPI wakeup sources (`XHC0`-`XHC4`) and root hubs (`usb5`, `usb6`) are for the ROG Ally. Adjust for your hardware if needed - run `lsusb` and check `/proc/acpi/wakeup`.
+If you use an external gamepad (e.g. GameSir via 2.4GHz dongle), this InputPlumber device config makes it appear as an Xbox Elite controller. Adjust `vendor_id`, `product_id`, and `name` to match your controller (run `lsusb` and check `/sys/class/input/event*/device/name`).
 
 ```bash
-# Install udev rule for dock USB hubs (enables wakeup on hot-plug)
-ssh -t deck@<DEVICE_IP> "sudo tee /etc/udev/rules.d/99-waketv-usb-wake.rules > /dev/null << 'UDEV'
-ACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"05e3\", ATTR{idProduct}==\"0610\", RUN+=\"/bin/sh -c 'echo enabled > /sys%p/power/wakeup'\"
-ACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"05e3\", ATTR{idProduct}==\"0626\", RUN+=\"/bin/sh -c 'echo enabled > /sys%p/power/wakeup'\"
-UDEV
-sudo udevadm control --reload-rules"
+ssh -t deck@<DEVICE_IP> "sudo /bin/sh -c '
+mkdir -p /etc/inputplumber/devices.d
+cat > /etc/inputplumber/devices.d/50-external-gamepad.yaml << EOF
+version: 1
+kind: CompositeDevice
+name: External Controller
+
+single_source: true
+matches: []
+
+source_devices:
+  - group: gamepad
+    evdev:
+      name: Generic X-Box pad
+      vendor_id: 3537
+      product_id: 1098
+      handler: event*
+
+options:
+  auto_manage: true
+
+target_devices:
+  - xbox-elite
+EOF
+systemctl restart inputplumber
+'"
 ```
 
+> **Note:** The plugin will automatically correct the target to xbox-elite if steamos-manager overrides it on startup.
+
+### 3. USB Wake: Boot Service
+
+The boot service enables wakeup on USB root hubs, dock hubs, and ACPI wakeup sources. These are volatile kernel flags that reset every reboot — the service is the only runtime component.
+
+> **Note:** The hub VID:PID (`05e3:0610` and `05e3:0626`) match common Genesys Logic USB hubs used in docks. The ACPI wakeup sources (`XHC0`-`XHC4`) and root hubs (`usb5`, `usb6`) are for the ROG Ally. Adjust for your hardware if needed — run `lsusb` and check `/proc/acpi/wakeup`.
+
 ```bash
-# Install boot service for root hubs and ACPI wakeup (idempotent, won't fail on missing paths)
-ssh -t deck@<DEVICE_IP> "sudo tee /etc/systemd/system/usb-wake.service > /dev/null << 'EOF'
+ssh -t deck@<DEVICE_IP> "sudo /bin/sh -c '
+cat > /etc/systemd/system/usb-wake.service << SVC
 [Unit]
 Description=Enable USB wake for gamepad and Ethernet WOL
 After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '\
+ExecStart=/bin/sh -c \"\
   for hub in usb5 usb6; do \
-    [ -f /sys/bus/usb/devices/\$hub/power/wakeup ] && echo enabled > /sys/bus/usb/devices/\$hub/power/wakeup; \
+    [ -f /sys/bus/usb/devices/\\\$hub/power/wakeup ] && echo enabled > /sys/bus/usb/devices/\\\$hub/power/wakeup; \
+  done; \
+  for port in 5-1 6-1; do \
+    [ -f /sys/bus/usb/devices/\\\$port/power/wakeup ] && echo enabled > /sys/bus/usb/devices/\\\$port/power/wakeup; \
   done; \
   for xhc in XHC0 XHC1 XHC2 XHC3 XHC4; do \
-    grep -q \"^\$xhc.*disabled\" /proc/acpi/wakeup 2>/dev/null && echo \$xhc > /proc/acpi/wakeup; \
+    grep -q \\\"^\\\$xhc.*disabled\\\" /proc/acpi/wakeup 2>/dev/null && echo \\\$xhc > /proc/acpi/wakeup; \
   done; \
-  true'
+  true\"
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now usb-wake.service"
+SVC
+systemctl daemon-reload
+systemctl enable --now usb-wake.service
+'"
 ```
 
 ### 4. InputPlumber Suspend Service
@@ -147,14 +201,14 @@ ssh -t deck@<DEVICE_IP> "\
 
 When enabled in the plugin settings, the plugin continuously monitors connected gamepads:
 
-1. Polls `/dev/input/event*` every 3 seconds for gamepad-capable devices
+1. Polls `/dev/input/event*` every 2 seconds for gamepad-capable devices
 2. Classifies each device as built-in or external by resolving its sysfs path to a USB bus port
 3. When an external gamepad is detected, the built-in controller's virtual gamepad is removed via InputPlumber's D-Bus API (`SetTargetDevices` empty on the built-in CompositeDevice)
-4. InputPlumber's `ManageAllDevices` is enabled so the external controller is absorbed and emulated as Xbox Elite (`xbox-elite` target type), providing back paddle and full button support
-5. When all external gamepads are disconnected, the built-in controller is restored and `ManageAllDevices` is reverted
+4. If an InputPlumber device config exists for the external controller (section 2 of System Setup), it is emulated as Xbox Elite. The plugin corrects the target if steamos-manager overrides it.
+5. When all external gamepads are disconnected, the built-in controller is restored
 6. On plugin startup/shutdown, the built-in controller is always re-enabled as a safety net
 
-Requires the polkit rule (section 2 of System Setup). Works with USB dongles, wired controllers, and Bluetooth gamepads.
+Requires the polkit rule from section 1. Works with USB dongles, wired controllers, and Bluetooth gamepads.
 
 ### On Gamepad Guide Button Press (While Awake)
 
@@ -283,6 +337,14 @@ wake-tv/
 - If `inputplumber-suspend.service` is enabled, InputPlumber handles device restoration. Check its logs: `journalctl -u inputplumber -n 50`
 - If InputPlumber is not installed, verify the sudoers rule is in place: `ls -la /etc/sudoers.d/zz-waketv-usb`
 - Check plugin logs for rebind results (look for "Post-resume:" and "inputplumber-suspend")
+
+### Things stopped working after a SteamOS update
+Config files should persist natively via the atomic update keeplist. Verify:
+```bash
+cat /etc/atomic-update.conf.d/waketv.conf    # should list 5 paths
+ls /etc/sudoers.d/zz-waketv-usb /etc/udev/rules.d/99-waketv-usb-wake.rules /etc/polkit-1/rules.d/zz-waketv-inputplumber.rules 2>&1
+```
+If the keeplist file itself was removed (edge case in major OS restructuring), re-run section 1 of System Setup.
 
 ### Plugin logs
 ```bash
