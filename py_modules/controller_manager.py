@@ -69,15 +69,29 @@ def _resolve_usb_port(event_path: str) -> str | None:
     return m.group(1)
 
 
+def _is_bluetooth_device(event_path: str) -> bool:
+    """Check if an input device is connected via Bluetooth.
+
+    Bluetooth HID devices route through the uhid subsystem, so their
+    sysfs path contains '/uhid/'. True virtual devices (e.g. InputPlumber
+    output) live under '/devices/virtual/input/' without uhid.
+    """
+    basename = os.path.basename(event_path)
+    real = os.path.realpath(f"/sys/class/input/{basename}")
+    return "/uhid/" in real
+
+
 def _get_root_bus_port(port: str) -> str:
     """Extract root bus-port from a full port path (e.g. '5-1.1' -> '5-1')."""
     return port.split(".")[0]
 
 
 def find_gamepad_devices() -> list[dict]:
-    """Find all gamepad input devices and classify as built-in or external.
+    """Find all gamepad input devices and classify as built-in, external, or virtual.
 
     Returns list of dicts: event_path, name, usb_port, is_builtin, is_virtual.
+    Bluetooth gamepads (no USB port but routed through uhid) are correctly
+    classified as external, not virtual.
     """
     devices = []
     for path in sorted(glob.glob("/dev/input/event*")):
@@ -87,8 +101,9 @@ def find_gamepad_devices() -> list[dict]:
         basename = os.path.basename(path)
         name = _read_sysfs(f"/sys/class/input/{basename}/device/name")
         usb_port = _resolve_usb_port(path)
+        bluetooth = _is_bluetooth_device(path)
 
-        is_virtual = usb_port is None
+        is_virtual = usb_port is None and not bluetooth
         is_builtin = False
         if usb_port and _get_root_bus_port(usb_port) in BUILTIN_USB_BUSES:
             is_builtin = True

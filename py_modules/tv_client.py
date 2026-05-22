@@ -276,6 +276,8 @@ class TVClient:
     async def get_system_info(self) -> dict:
         return await self.send_command("ssap://system/getSystemInfo")
 
+
+
 # ---------------------------------------------------------------------------
 # Wake-on-LAN
 # ---------------------------------------------------------------------------
